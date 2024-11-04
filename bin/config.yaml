@@ -1,0 +1,5 @@
+excel_file_paths: [path\to\xlsx\file]
+#postgres_url_base_db: postgresql://user:pass@host:port/database
+postgres_url_base_db: postgresql://postgres:1234@localhost:5432/qwe
+interval_seconds: 3600 #Интервал для задачи переноса таблицы в бд
+ignorant_sheets: [ignoresheet1,ignoresheet2]
