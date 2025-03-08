@@ -5,8 +5,8 @@ import (
 	"runtime"
 	"time"
 
-	"xlsxtoSQL/cmd/converter/cfg"
-	"xlsxtoSQL/cmd/converter/processXlsx"
+	"xlsxtoSQL/cfg"
+	"xlsxtoSQL/processXlsx"
 )
 
 func main() {

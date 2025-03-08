@@ -2,10 +2,11 @@ package processXlsx
 
 import (
 	"fmt"
-	"github.com/lib/pq"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 func isInt(str string) bool {
@@ -91,4 +92,16 @@ func contains(slice []string, str string) bool {
 		}
 	}
 	return false
+}
+
+func padRow(row []string, headerLength int) []string {
+	paddedRow := make([]string, headerLength)
+	for i := 0; i < headerLength; i++ {
+		if i < len(row) {
+			paddedRow[i] = row[i]
+		} else {
+			paddedRow[i] = ""
+		}
+	}
+	return paddedRow
 }
