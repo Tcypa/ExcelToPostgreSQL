@@ -1,8 +1,11 @@
-package cfg
+package config
+
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v2"
 )
@@ -14,6 +17,10 @@ type Config struct {
 	IgnorantSheets    []string `yaml:"ignorant_sheets"`
 }
 
+var (
+	config *Config
+	once   sync.Once
+)
 func LoadConfig(filename string) (Config, error) {
 	var config Config
 	file, err := os.Open(filename)
@@ -29,3 +36,11 @@ func LoadConfig(filename string) (Config, error) {
 
 	return config, nil
 }
+
+func GetConfig() *Config {
+	if config == nil {
+		log.Fatal("Config not initialized. Call LoadConfig() first.")
+	}
+	return config
+}
+

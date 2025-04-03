@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
-	"xlsxtoSQL/cfg"
+	cfg "xlsxtoSQL/config"
+	"xlsxtoSQL/postgres"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lib/pq"
@@ -18,45 +18,58 @@ func ProcessExcelFile(config cfg.Config, file string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open XLSX file: %w", err)
 	}
-	defer func() {
-		if err := xlsx.Close(); err != nil {
-			fmt.Println(err)
-		}
-	}()
+	defer xlsx.Close()
+
 	ctx := context.Background()
+	p := postgres.Init(ctx)
+	defer p.Close()
 
-	dbPool, err := pgxpool.Connect(ctx, config.PostgresURLBaseDB)
+	schema := strings.ReplaceAll(file, " ", "_")
+
+	err = createSchema(p.Pool, schema)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return err
 	}
-	defer dbPool.Close()
-
-	schema := filepath.Base(file)
-	ext := filepath.Ext(schema)
-	schema = strings.TrimSuffix(schema, ext)
-	schema = strings.ReplaceAll(schema, " ", "_")
-
-	err = createSchema(dbPool, schema)
 
 	sheets := xlsx.GetSheetMap()
-	fmt.Println("Sheets in XLSX file:")
 	for _, sheetName := range sheets {
 		if sheetName == "" {
 			continue
 		}
-		fmt.Println("-", sheetName)
 		if contains(config.IgnorantSheets, sheetName) {
 			log.Printf("sheet %s in ignorant list", sheetName)
 			continue
 		}
-		createAndInsert(ctx, dbPool, xlsx, sheetName, schema)
+		createAndInsert(ctx, p.Pool, xlsx, sheetName, schema)
 	}
-
-	fmt.Println("Schema generation and data insertion complete.")
 	return nil
 }
 
-func createAndInsert(ctx context.Context, dbPool *pgxpool.Pool, xlsx *excelize.File, sheetName string, schema string) {
+func createSchema(conn *pgxpool.Pool, schema string) error {
+	ctx := context.Background()
+
+	var exists bool
+	query := "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1);"
+	err := conn.QueryRow(ctx, query, schema).Scan(&exists)
+	if err != nil {
+		log.Printf("error check scheme exist %s: %v", schema, err)
+		return err
+	}
+
+	if !exists {
+		createQuery := fmt.Sprintf("CREATE SCHEMA %s;", pq.QuoteIdentifier(schema))
+		_, err := conn.Exec(ctx, createQuery)
+		if err != nil {
+			return fmt.Errorf("error on create schema %s: %v", schema, err)
+		}
+		log.Printf("schema %s created", schema)
+	} else {
+		log.Printf("schema %s already exists", schema)
+	}
+	return nil
+}
+
+func createAndInsert(ctx context.Context, dbPool *pgxpool.Pool, xlsx *excelize.File, sheetName, schema string) {
 	rows, err := xlsx.Rows(sheetName)
 	if err != nil {
 		log.Printf("failed to get rows from %s: %v", sheetName, err)
@@ -75,34 +88,32 @@ func createAndInsert(ctx context.Context, dbPool *pgxpool.Pool, xlsx *excelize.F
 		return
 	}
 
-	columnTypes := detectColTypes(headerRow, xlsx, sheetName)
-	//Unsafe!!!
 	var tableExists bool
-	exst := fmt.Sprintf("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $$%s$$ and table_schema = $$%s$$)", sheetName, schema)
-	err = dbPool.QueryRow(ctx, exst).Scan(&tableExists)
+	exst := "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2);"
+	err = dbPool.QueryRow(ctx, exst, schema, sheetName).Scan(&tableExists)
 	if err != nil {
 		log.Fatalf("failed to check if table exists: %v", err)
 	}
 
 	if !tableExists {
-		//Unsafe!!!
 		var schemaBuilder strings.Builder
-		schemaBuilder.WriteString(fmt.Sprintf("CREATE TABLE %s.%s (\n", schema, pq.QuoteIdentifier(sheetName)))
+		schemaBuilder.WriteString(fmt.Sprintf(
+			"CREATE TABLE %s.%s (\n",
+			pq.QuoteIdentifier(schema),
+			pq.QuoteIdentifier(sheetName),
+		))
 		schemaBuilder.WriteString("id_row SERIAL PRIMARY KEY,\n")
-
 		for i, column := range headerRow {
 			if column == "" {
 				continue
 			}
-			sqlType := columnTypes[i]
-			schemaBuilder.WriteString(fmt.Sprintf("%s %s", pq.QuoteIdentifier(column), sqlType))
+			schemaBuilder.WriteString(fmt.Sprintf("%s TEXT", pq.QuoteIdentifier(column)))
 			if i < len(headerRow)-1 {
 				schemaBuilder.WriteString(",\n")
 			}
 		}
-		schema := strings.TrimSuffix(schemaBuilder.String(), ",\n") + ");"
-
-		_, err = dbPool.Exec(ctx, schema)
+		schemaSQL := strings.TrimSuffix(schemaBuilder.String(), ",\n") + ");"
+		_, err = dbPool.Exec(ctx, schemaSQL)
 		if err != nil {
 			log.Fatalf("failed to create table %s: %v", sheetName, err)
 		}
@@ -110,122 +121,39 @@ func createAndInsert(ctx context.Context, dbPool *pgxpool.Pool, xlsx *excelize.F
 	}
 
 	rowIndex := 1
-	for {
-		if !rows.Next() {
-			break
-		}
+	for rows.Next() {
 		row, err := rows.Columns()
 		if err != nil {
 			log.Printf("failed to read row %d in sheet %s: %v", rowIndex, sheetName, err)
 			continue
 		}
-		row = padRow(row, len(headerRow))
-		insertOrUpdateRow(ctx, dbPool, sheetName, headerRow, columnTypes, row, rowIndex, schema)
+		insertRow(ctx, dbPool, sheetName, headerRow, row, rowIndex, schema)
 		rowIndex++
 	}
-
-	if err = rows.Close(); err != nil {
-		log.Printf("error closing rows in sheet %s: %v", sheetName, err)
-	}
-
 	log.Printf("Data inserted or updated in table %s successfully", sheetName)
 }
 
-func insertOrUpdateRow(ctx context.Context, dbPool *pgxpool.Pool, tableName string, columns []string, columnTypes []string, row []string, rowIndex int, schema string) {
-	updateColumns := make([]string, 0)
+func insertRow(ctx context.Context, dbPool *pgxpool.Pool, tableName string, columns, row []string, rowIndex int, schema string) {
 	insertValues := make([]interface{}, 0)
 	insertValues = append(insertValues, rowIndex)
-
+	placeholders := []string{"$1"}
 	for i, column := range columns {
-		if isEmpty(column) {
+		if column == "" {
 			continue
 		}
-		updateColumns = append(updateColumns, fmt.Sprintf("%s = $%d", pq.QuoteIdentifier(column), len(insertValues)+1))
-		value := convertValue(row[i], columnTypes[i])
-		if value == nil {
-			insertValues = append(insertValues, nil)
-		} else {
-			insertValues = append(insertValues, value)
-		}
+		insertValues = append(insertValues, row[i])
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(insertValues)))
 	}
-	//Unsafe!!!
+
 	insertQuery := fmt.Sprintf(
-		"INSERT INTO %s.%s (id_row, %s) VALUES ($1, %s) ON CONFLICT (id_row) DO UPDATE SET %s",
-		schema,
+		"INSERT INTO %s.%s (id_row, %s) VALUES (%s)",
+		pq.QuoteIdentifier(schema),
 		pq.QuoteIdentifier(tableName),
 		strings.Join(quoteIdentifiers(columns), ", "),
-		strings.Join(makePlaceholders(len(insertValues)-1), ", "),
-		strings.Join(updateColumns, ", "),
+		strings.Join(placeholders, ", "),
 	)
 	_, err := dbPool.Exec(ctx, insertQuery, insertValues...)
 	if err != nil {
 		log.Printf("error while insert or update on %d in table %s: %v", rowIndex, tableName, err)
-		log.Printf("Query: %s", insertQuery)
-		log.Printf("Values: %v", insertValues)
-		log.Printf("Columns: %v", columnTypes)
 	}
-}
-
-func detectColTypes(columns []string, xlsx *excelize.File, sheetName string) []string {
-	columnTypes := make([]string, len(columns))
-	rows, err := xlsx.Rows(sheetName)
-	if err != nil {
-		log.Printf("failed to get rows from %s: %v", sheetName, err)
-	}
-	defer rows.Close()
-	for i := range columns {
-		columnTypes[i] = "TEXT"
-	}
-
-	for rows.Next() {
-		row, err := rows.Columns()
-		if err != nil {
-			continue
-		}
-		for i, value := range row {
-			//trimmedValue := strings.TrimSpace(value)
-			trimmedValue := strings.ReplaceAll(value, ",", "")
-			if isInt(trimmedValue) {
-				columnTypes[i] = "NUMERIC"
-			} else if isDate(trimmedValue) {
-				columnTypes[i] = "DATE"
-			} else {
-				columnTypes[i] = "TEXT"
-			}
-		}
-	}
-
-	return columnTypes
-}
-
-func createSchema(conn *pgxpool.Pool, schema string) error {
-
-	ctx := context.Background()
-
-	var exists bool
-
-	//Unsafe!!!
-	query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '%s');", schema)
-
-	err := conn.QueryRow(ctx, query).Scan(&exists)
-
-	if err != nil {
-		log.Printf("error check scheme exist %s: %v", schema, err)
-		return nil
-	}
-	if !exists {
-		//Unsafe!!!
-		_, err := conn.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s;", schema))
-
-		if err != nil {
-
-			return fmt.Errorf("error on create schema %s: %v", schema, err)
-		}
-		log.Printf("schema %s created", schema)
-	} else {
-		log.Printf("schema %s already exists", schema)
-	}
-
-	return nil
-
 }

@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	"xlsxtoSQL/cfg"
+	cfg "xlsxtoSQL/config"
 	"xlsxtoSQL/processXlsx"
 )
 

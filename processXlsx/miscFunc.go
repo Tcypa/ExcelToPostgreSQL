@@ -69,14 +69,15 @@ func convertValue(value string, columnType string) interface{} {
 	}
 }
 
-func quoteIdentifiers(columns []string) []string {
-	quoted := make([]string, len(columns))
-	for i, column := range columns {
-		quoted[i] = pq.QuoteIdentifier(column)
+func quoteIdentifiers(names []string) []string {
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != "" {
+			quoted = append(quoted, pq.QuoteIdentifier(name))
+		}
 	}
 	return quoted
 }
-
 func makePlaceholders(n int) []string {
 	placeholders := make([]string, n)
 	for i := 0; i < n; i++ {
