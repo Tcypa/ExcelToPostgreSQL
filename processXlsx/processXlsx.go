@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	cfg "xlsxtoSQL/config"
+	"xlsxtoSQL/datatype"
 	"xlsxtoSQL/postgres"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,8 +27,7 @@ func ProcessExcelFile(config cfg.Config, file string) error {
 
 	schema := strings.ReplaceAll(file, " ", "_")
 
-	err = createSchema(p.Pool, schema)
-	if err != nil {
+	if err := createSchema(p.Pool, schema); err != nil {
 		return err
 	}
 
@@ -52,7 +52,7 @@ func createSchema(conn *pgxpool.Pool, schema string) error {
 	query := "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1);"
 	err := conn.QueryRow(ctx, query, schema).Scan(&exists)
 	if err != nil {
-		log.Printf("error check scheme exist %s: %v", schema, err)
+		log.Printf("error check schema exist %s: %v", schema, err)
 		return err
 	}
 
@@ -70,90 +70,137 @@ func createSchema(conn *pgxpool.Pool, schema string) error {
 }
 
 func createAndInsert(ctx context.Context, dbPool *pgxpool.Pool, xlsx *excelize.File, sheetName, schema string) {
-	rows, err := xlsx.Rows(sheetName)
+	rows, err := xlsx.GetRows(sheetName)
 	if err != nil {
-		log.Printf("failed to get rows from %s: %v", sheetName, err)
-		return
+		log.Printf("error while get rows from xlsx file sheet: %s err: %v ", sheetName, err)
 	}
-	defer rows.Close()
-
-	if !rows.Next() {
+	if len(rows) < 2 {
 		log.Printf("sheet %s is empty or has an invalid header row", sheetName)
 		return
 	}
 
-	headerRow, err := rows.Columns()
-	if err != nil || len(headerRow) == 0 {
-		log.Printf("sheet %s has an invalid header row", sheetName)
-		return
-	}
+	headerRow := rows[0]
+	dataRows := rows[1:]
 
-	var tableExists bool
-	exst := "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2);"
-	err = dbPool.QueryRow(ctx, exst, schema, sheetName).Scan(&tableExists)
-	if err != nil {
-		log.Fatalf("failed to check if table exists: %v", err)
-	}
+	columnTypes := datatype.DetectColumnTypes(dataRows)
 
-	if !tableExists {
-		var schemaBuilder strings.Builder
-		schemaBuilder.WriteString(fmt.Sprintf(
-			"CREATE TABLE %s.%s (\n",
-			pq.QuoteIdentifier(schema),
-			pq.QuoteIdentifier(sheetName),
-		))
-		schemaBuilder.WriteString("id_row SERIAL PRIMARY KEY,\n")
-		for i, column := range headerRow {
-			if column == "" {
-				continue
-			}
-			schemaBuilder.WriteString(fmt.Sprintf("%s TEXT", pq.QuoteIdentifier(column)))
-			if i < len(headerRow)-1 {
-				schemaBuilder.WriteString(",\n")
-			}
-		}
-		schemaSQL := strings.TrimSuffix(schemaBuilder.String(), ",\n") + ");"
-		_, err = dbPool.Exec(ctx, schemaSQL)
-		if err != nil {
-			log.Fatalf("failed to create table %s: %v", sheetName, err)
-		}
-		log.Printf("Table %s created successfully", sheetName)
-	}
+	createTable(ctx, dbPool, schema, sheetName, headerRow, columnTypes)
 
-	rowIndex := 1
-	for rows.Next() {
-		row, err := rows.Columns()
-		if err != nil {
-			log.Printf("failed to read row %d in sheet %s: %v", rowIndex, sheetName, err)
-			continue
-		}
-		insertRow(ctx, dbPool, sheetName, headerRow, row, rowIndex, schema)
-		rowIndex++
+	for rowIndex, row := range dataRows {
+		insertRow(ctx, dbPool, sheetName, headerRow, row, rowIndex+1, schema, columnTypes)
 	}
 	log.Printf("Data inserted or updated in table %s successfully", sheetName)
 }
 
-func insertRow(ctx context.Context, dbPool *pgxpool.Pool, tableName string, columns, row []string, rowIndex int, schema string) {
-	insertValues := make([]interface{}, 0)
-	insertValues = append(insertValues, rowIndex)
-	placeholders := []string{"$1"}
+func createTable(ctx context.Context, dbPool *pgxpool.Pool, schema, sheetName string, columns, columnTypes []string) {
+	var schemaBuilder strings.Builder
+	schemaBuilder.WriteString(fmt.Sprintf(
+		"CREATE TABLE IF NOT EXISTS %s.%s (\n",
+		pq.QuoteIdentifier(schema),
+		pq.QuoteIdentifier(sheetName),
+	))
+	schemaBuilder.WriteString("id_row SERIAL PRIMARY KEY,\n")
+
 	for i, column := range columns {
 		if column == "" {
 			continue
 		}
-		insertValues = append(insertValues, row[i])
+
+		schemaBuilder.WriteString(fmt.Sprintf("%s %s", pq.QuoteIdentifier(column), columnTypes[i]))
+		if i < len(columns)-1 {
+			schemaBuilder.WriteString(",\n")
+		}
+	}
+
+	schemaSQL := strings.TrimSuffix(schemaBuilder.String(), ",\n") + ");"
+	_, err := dbPool.Exec(ctx, schemaSQL)
+	if err != nil {
+		log.Fatalf("failed to create table %s: %v", sheetName, err)
+	}
+	log.Printf("Table %s created successfully", sheetName)
+}
+
+func insertRow(ctx context.Context, dbPool *pgxpool.Pool, tableName string, columns, row []string, rowIndex int, schema string, columnTypes []string) {
+	insertValues := make([]interface{}, 0)
+	insertValues = append(insertValues, rowIndex)
+	placeholders := []string{"$1"}
+
+
+	if len(row) < len(columns) {
+		padded := make([]string, len(columns))
+		copy(padded, row)
+		row = padded
+	}
+
+
+	for i, column := range columns {
+		if column == "" {
+			continue
+		}
+		value := row[i]
+
+		if columnTypes[i] == "DATE" && strings.TrimSpace(value) != "" {
+			converted, err := datatype.ConvertToDate(value)
+			if err != nil {
+				log.Printf("failed to convert date value '%s' in column %s: %v", value, column, err)
+			} else {
+				value = converted
+			}
+		}
+		insertValues = append(insertValues, value)
 		placeholders = append(placeholders, fmt.Sprintf("$%d", len(insertValues)))
 	}
 
 	insertQuery := fmt.Sprintf(
-		"INSERT INTO %s.%s (id_row, %s) VALUES (%s)",
+		"INSERT INTO %s.%s (id_row, %s) VALUES (%s) ON CONFLICT (id_row) DO UPDATE SET %s",
 		pq.QuoteIdentifier(schema),
 		pq.QuoteIdentifier(tableName),
 		strings.Join(quoteIdentifiers(columns), ", "),
 		strings.Join(placeholders, ", "),
+		buildUpdateSetClause(columns),
 	)
+
 	_, err := dbPool.Exec(ctx, insertQuery, insertValues...)
 	if err != nil {
-		log.Printf("error while insert or update on %d in table %s: %v", rowIndex, tableName, err)
+		log.Printf("error while inserting row %d in table %s: %v", rowIndex, tableName, err)
+		if pqErr, ok := err.(*pq.Error); ok {
+			log.Printf("PostgreSQL error: %s", pqErr.Code)
+			adjustColumnType(ctx, dbPool, schema, tableName, columns, columnTypes, row)
+		}
+	}
+}
+
+func buildUpdateSetClause(columns []string) string {
+	var sets []string
+	for _, col := range columns {
+		sets = append(sets, fmt.Sprintf("%s = EXCLUDED.%s", pq.QuoteIdentifier(col), pq.QuoteIdentifier(col)))
+	}
+	return strings.Join(sets, ", ")
+}
+
+func adjustColumnType(ctx context.Context, dbPool *pgxpool.Pool, schema, tableName string, columns, columnTypes, row []string) {
+	for i, column := range columns {
+		if column == "" {
+			continue
+		}
+		newType := datatype.DetermineType(row[i])
+		if newType != columnTypes[i] {
+			alterQuery := fmt.Sprintf(
+				"ALTER TABLE %s.%s ALTER COLUMN %s SET DATA TYPE %s USING %s::%s",
+				pq.QuoteIdentifier(schema),
+				pq.QuoteIdentifier(tableName),
+				pq.QuoteIdentifier(column),
+				newType,
+				pq.QuoteIdentifier(column),
+				newType,
+			)
+			_, err := dbPool.Exec(ctx, alterQuery)
+			if err != nil {
+				log.Printf("failed to alter column %s in table %s: %v", column, tableName, err)
+			} else {
+				log.Printf("Column %s in table %s changed to %s", column, tableName, newType)
+				columnTypes[i] = newType
+			}
+		}
 	}
 }

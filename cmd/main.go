@@ -10,13 +10,15 @@ import (
 )
 
 func main() {
-	config, err := cfg.LoadConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
-	}
+
 	for {
+		err := cfg.LoadConfig("config.yaml")
+		var config = cfg.GetConfig()
+		if err != nil {
+			log.Fatalf("failed to load config: %v", err)
+		}
 		for _, file := range config.ExcelFilePaths {
-			err := processXlsx.ProcessExcelFile(config, file)
+			err := processXlsx.ProcessExcelFile(*config, file)
 			if err != nil {
 				log.Printf("error processing excel file: %v", err)
 			}

@@ -1,6 +1,5 @@
 package config
 
-
 import (
 	"fmt"
 	"log"
@@ -20,21 +19,29 @@ type Config struct {
 var (
 	config *Config
 	once   sync.Once
+	err    error
 )
-func LoadConfig(filename string) (Config, error) {
-	var config Config
-	file, err := os.Open(filename)
-	if err != nil {
-		return config, fmt.Errorf("failed to open config file: %w", err)
-	}
-	defer file.Close()
 
-	decoder := yaml.NewDecoder(file)
-	if err := decoder.Decode(&config); err != nil {
-		return config, fmt.Errorf("failed to decode config file: %w", err)
-	}
+func LoadConfig(filename string) error {
+	once.Do(func() {
+		var cfg Config
+		file, openErr := os.Open(filename)
+		if openErr != nil {
+			err = fmt.Errorf("failed to open config file: %w", openErr)
+			return
+		}
+		defer file.Close()
 
-	return config, nil
+		decoder := yaml.NewDecoder(file)
+		if decodeErr := decoder.Decode(&cfg); decodeErr != nil {
+			err = fmt.Errorf("failed to decode config file: %w", decodeErr)
+			return
+		}
+
+		config = &cfg
+	})
+
+	return err
 }
 
 func GetConfig() *Config {
@@ -43,4 +50,3 @@ func GetConfig() *Config {
 	}
 	return config
 }
-

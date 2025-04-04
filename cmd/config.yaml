@@ -1,0 +1,5 @@
+excel_file_paths: [MOCK_DATA.xlsx]
+#postgres_url_base_db: postgresql://user:pass@host:port/database
+postgres_url_base_db: postgresql://admin:admin@localhost:5432/mydatabase
+interval_seconds: 36 #Insert interval
+ignorant_sheets: [ignoresheet1,ignoresheet2]
