@@ -1,30 +1,31 @@
 package main
 
 import (
+	"flag"
 	"log"
-	"runtime"
 	"time"
-
-	cfg "xlsxtoSQL/config"
+	"xlsxtoSQL/config"
 	"xlsxtoSQL/processXlsx"
 )
 
 func main() {
+	configPath := flag.String("config", "config.yaml", "path to the config file")
+	flag.Parse()
 
+	err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	cfg := config.GetConfig()
 	for {
-		err := cfg.LoadConfig("config.yaml")
-		var config = cfg.GetConfig()
-		if err != nil {
-			log.Fatalf("failed to load config: %v", err)
-		}
-		for _, file := range config.ExcelFilePaths {
-			err := processXlsx.ProcessExcelFile(*config, file)
+		for _, file := range cfg.ExcelFilePaths {
+			err := processXlsx.ProcessExcelFile(*cfg, file)
 			if err != nil {
-				log.Printf("error processing excel file: %v", err)
+				log.Printf("Error processing excel file: %v", err)
 			}
 		}
-		runtime.GC()
 
-		time.Sleep(time.Duration(config.IntervalSeconds) * time.Second)
+		time.Sleep(time.Duration(cfg.IntervalSeconds) * time.Second)
 	}
 }

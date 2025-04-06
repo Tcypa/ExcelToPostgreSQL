@@ -4,31 +4,53 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: myuser
-      POSTGRES_PASSWORD: mypassword
-      POSTGRES_DB: mydatabase
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: database
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U myuser"]
+      test: ["CMD-SHELL", "pg_isready -U user"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "9090:90" 
+    depends_on:
+      - db
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./postgres/servers.json:/pgadmin4/servers.json 
+    restart: unless-stopped
+
   app:
-    build: .
+    build: ./api
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      POSTGRES_URL_BASE_DB: "postgres://myuser:mypassword@db:5432/mydatabase?sslmode=disable"
-      INTERVAL_SECONDS: "60"
     volumes:
-      - ./config/config.yaml:/app/config.yaml
-      - ./data:/app/data  # если требуется для доступа к XLSX файлам
+      - ./cmd/config.yaml:/app/config.yaml
+      - ./data:/app/data 
     restart: on-failure
+
+  app-react:
+    build: ./web
+    ports:
+      - "3000:3000" 
+    environment:
+      REACT_APP_API_URL: "http://app:8080"  
+    depends_on:
+      - app
+    restart: unless-stopped
 
 volumes:
   db_data:
+  pgadmin_data:
