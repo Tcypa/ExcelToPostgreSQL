@@ -41,15 +41,15 @@ services:
       - ./data:/app/data 
     restart: on-failure
 
-  app-react:
-    build: ./web
-    ports:
-      - "3000:3000" 
-    environment:
-      REACT_APP_API_URL: "http://app:8080"  
-    depends_on:
-      - app
-    restart: unless-stopped
+  # app-react:
+  #   build: ./web
+  #   ports:
+  #     - "3000:3000" 
+  #   environment:
+  #     REACT_APP_API_URL: "http://app:8080"  
+  #   depends_on:
+  #     - app
+  #   restart: unless-stopped
 
 volumes:
   db_data:
