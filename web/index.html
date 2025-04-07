@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Excel to PostgreSQL</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Excel Processor Control</h1>
+    <form id="startForm">
+        <label for="excelFileName">Excel File Name (in /app/data):</label><br>
+        <input type="text" id="excelFileName" name="excelFileName" value="MOCK_DATA.xlsx"><br><br>
+
+        <label for="postgresUrl">PostgreSQL URL:</label><br>
+        <input type="text" id="postgresUrl" name="postgresUrl" value="postgresql://user:password@db:5432/mydatabase"><br><br>
+
+        <label for="ignorantSheets">Ignored Sheets (comma-separated):</label><br>
+        <input type="text" id="ignorantSheets" name="ignorantSheets" value="ignoresheet1,ignoresheet2"><br><br>
+
+        <label>Run Mode:</label><br>
+        <input type="radio" id="runOnce" name="runMode" value="once" checked>
+        <label for="runOnce">Run Once</label><br>
+        <input type="radio" id="runInterval" name="runMode" value="interval">
+        <label for="runInterval">Run with Interval (sec)</label>
+        <input type="number" id="intervalSeconds" name="intervalSeconds" value="36" min="1" disabled><br><br>
+
+        <button type="submit">Start</button>
+    </form>
+
+    <h2>Running Instances</h2>
+    <table id="instancesTable">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Configuration</th>
+                <th>Started At</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="instancesBody"></tbody>
+    </table>
+
+    <script src="script.js"></script>
+</body>
+</html>
