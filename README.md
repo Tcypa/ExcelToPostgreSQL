@@ -3,7 +3,7 @@ A tool to process Excel files into PostgreSQL via a web UI and API, running in D
 ## Run
 ```bash
    git clone https://github.com/Tcypa/ExcelToPostgreSQL
-   cd excel-to-postgres
+   cd ExcelToPostgreSQL
    docker-compose up --build .
 ```
 if there is a need to mount a folder with files, then the path to the folder is specified in docker-compose.yaml app:
